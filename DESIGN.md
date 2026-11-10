@@ -44,7 +44,12 @@ glossary list:
 ## Implementation in `mkdocs-material-joapuiib`
 
 File: `../mkdocs-material-joapuiib/material_joapuiib/extensions/snippets.py`,
-tests in `tests/test_snippets.py`. Uncommitted at the time of writing.
+tests in `tests/test_snippets.py`. Committed on branch `feat/snippet-filters`
+of that repo (`aa0575c`).
+
+It is built on the extension points of this branch (`parse_snippet_target`,
+`process_snippet_lines`), so it **requires an unreleased pymdown-extensions**. On a
+release without them it raises a `RuntimeError` naming the missing methods.
 
 Use it instead of `pymdownx.snippets` (same options). Never load both: they register the
 same preprocessor name (`snippet`) and the last one wins silently.
@@ -65,8 +70,10 @@ markdown_extensions:
 - `args` is a raw string; surrounding whitespace is lost (upstream strips the whole
   quoted string).
 - Use single quotes around the include to put `"` in the args.
-- Filters apply to whole files and sections, in nested includes and in `-8<-` blocks.
-  **Not to line ranges** (`file.md:1:5 | ...` raises `SnippetFilterError`).
+- Filters apply to whole files, sections and line ranges, in nested includes and in
+  `-8<-` blocks.
+- In whole-file and line-range mode, filters see the `--8<-- [start/end:x]` marker
+  lines; upstream removes them afterwards (when nested snippets are parsed).
 
 ### Filter API
 
@@ -82,24 +89,18 @@ markdown_extensions:
 - Python `re` syntax, not POSIX BRE (`s/^*/x/` is invalid, write `s/^\*/x/`).
 - Replacement: `&` whole match, `\&` literal, `\1`.., `\n` splits the line.
 
-### How it hooks into the current release (workarounds)
+### How it hooks into pymdown-extensions
 
-Only `extract_section()` runs between reading a snippet and parsing nested snippets, so:
+- `parse_snippet_target(path)`: splits off `| ...`, calls `super()` on the path part and
+  stores the parsed chain as `target['filters']`.
+- `process_snippet_lines(lines, target)`: applies the chain.
 
-1. An instance attribute replaces `RE_SNIPPET_FILE` with a wrapper whose `match()`
-   splits off `| ...` and returns a fake match object. Group 3 becomes an opaque key
-   (`|section|spec`, `|` can't appear in section names).
-2. `extract_section()` resolves the key to `(section, [(name, args), ...])`, extracts
-   the real section (or keeps the whole file) and applies the chain.
-3. Because upstream then calls `parse_snippets(..., is_section=True)`, which skips
-   stripping section markers, whole-file mode strips them itself
-   (`strip_section_markers()`).
-
-This relies on internals (`RE_SNIPPET_FILE` groups, `extract_section`, `is_section`).
-Tested with pymdown-extensions 10.21.3.
-
-Line ranges can't be supported without copying upstream's slicing logic, because they
-are sliced inline in `parse_snippets` with no overridable method.
+Earlier version (before this branch, against 10.21.3), kept for reference: only
+`extract_section()` runs between reading a snippet and parsing nested ones, so it
+replaced `RE_SNIPPET_FILE` with a wrapper returning a fake match whose group 3 was an
+opaque key, resolved the key in `extract_section()`, and stripped section markers
+itself in whole-file mode (upstream then passed `is_section=True`). Line ranges could
+not be filtered without copying upstream's slicing logic.
 
 ## Upstream refactor (this branch, "option B")
 
@@ -122,7 +123,7 @@ Why this shape:
   `process_snippet_lines(lines, target)` with `self.md`.
 - Public methods instead of internals.
 
-With it, the joapuiib extension reduces to:
+The joapuiib extension now uses it, essentially:
 
 ```python
 def parse_snippet_target(self, path):
@@ -153,8 +154,9 @@ Tests: `TestSnippetsExtensionPoints` in `tests/test_extensions/test_snippets.py`
    transform applies to every include of that file.
 2. If accepted: add docs (`docs/src/markdown/extensions/snippets.md`) and a changelog
    entry, drop this file, open the PR.
-3. Once released: simplify the joapuiib extension as shown above, raise its
-   `pymdown-extensions` minimum version, and allow filters on line ranges.
+3. Once released: raise the joapuiib `pymdown-extensions` minimum version
+   (`material_joapuiib/requirements.txt`). Until then, that branch can't be released
+   (or needs a git dependency on a pushed fork branch).
 4. joapuiib pending: docs page (`docs/extensions/snippets.md` + card in
    `docs/extensions/index.md`, written with the `apunts:redaccio` skill), optionally
    switch its `properdocs.yml` to the new extension.
@@ -167,4 +169,11 @@ No local venv in this repo. Run with the joapuiib venv, which picks up this repo
 ```bash
 ../mkdocs-material-joapuiib/.venv/bin/python -m pytest -q tests
 ../mkdocs-material-joapuiib/.venv/bin/python -m ruff check pymdownx tests
+```
+
+Joapuiib tests need this repo's `pymdownx` (the venv has the released one):
+
+```bash
+cd ../mkdocs-material-joapuiib
+PYTHONPATH=../pymdown-extensions .venv/bin/python -m pytest -q
 ```
